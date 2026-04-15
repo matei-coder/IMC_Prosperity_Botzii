@@ -1,110 +1,14 @@
 """
-trader_r1.py — IMC Prosperity Round 1 (Intara)
+trader_hybrid.py — IMC Prosperity Round 1 (Intara)
 ───────────────────────────────────────────────────────────────────
 INTARIAN_PEPPER_ROOT: directional — acumulare max long, sell phase la ts >= 90000
 ASH_COATED_OSMIUM:   market making complet (EMA, momentum skew, imbalance, two-level)
 """
 
-import json
-from typing import Any, Dict, List, Optional
-from datamodel import (
-    Listing, Observation, Order, OrderDepth,
-    ProsperityEncoder, Symbol, Trade, TradingState,
-)
+from unittest import result
 
-# ── logger ────────────────────────────────────────────────────────────────────
-
-class Logger:
-    def __init__(self) -> None:
-        self.logs = ""
-        self.max_log_length = 3750
-
-    def print(self, *objects: Any, sep: str = " ", end: str = "\n") -> None:
-        self.logs += sep.join(map(str, objects)) + end
-
-    def flush(self, state: TradingState, orders: dict[Symbol, list[Order]], conversions: int, trader_data: str) -> None:
-        base_length = len(
-            self.to_json([
-                self.compress_state(state, ""),
-                self.compress_orders(orders),
-                conversions,
-                "",
-                "",
-            ])
-        )
-        max_item_length = (self.max_log_length - base_length) // 3
-        print(
-            self.to_json([
-                self.compress_state(state, self.truncate(state.traderData, max_item_length)),
-                self.compress_orders(orders),
-                conversions,
-                self.truncate(trader_data, max_item_length),
-                self.truncate(self.logs, max_item_length),
-            ])
-        )
-        self.logs = ""
-
-    def compress_state(self, state: TradingState, trader_data: str) -> list[Any]:
-        return [
-            state.timestamp,
-            trader_data,
-            self.compress_listings(state.listings),
-            self.compress_order_depths(state.order_depths),
-            self.compress_trades(state.own_trades),
-            self.compress_trades(state.market_trades),
-            state.position,
-            self.compress_observations(state.observations),
-        ]
-
-    def compress_listings(self, listings: dict[Symbol, Listing]) -> list[list[Any]]:
-        compressed = []
-        for listing in listings.values():
-            compressed.append([listing.symbol, listing.product, listing.denomination])
-        return compressed
-
-    def compress_order_depths(self, order_depths: dict[Symbol, OrderDepth]) -> dict[Symbol, list[Any]]:
-        compressed = {}
-        for symbol, order_depth in order_depths.items():
-            compressed[symbol] = [order_depth.buy_orders, order_depth.sell_orders]
-        return compressed
-
-    def compress_trades(self, trades: dict[Symbol, list[Trade]]) -> list[list[Any]]:
-        compressed = []
-        for arr in trades.values():
-            for trade in arr:
-                compressed.append([
-                    trade.symbol, trade.price, trade.quantity,
-                    trade.buyer, trade.seller, trade.timestamp,
-                ])
-        return compressed
-
-    def compress_observations(self, observations: Observation) -> list[Any]:
-        conversion_observations = {}
-        for product, observation in observations.conversionObservations.items():
-            conversion_observations[product] = [
-                observation.bidPrice, observation.askPrice,
-                observation.transportFees, observation.exportTariff,
-                observation.importTariff, observation.sugarPrice,
-                observation.sunlightIndex,
-            ]
-        return [observations.plainValueObservations, conversion_observations]
-
-    def compress_orders(self, orders: dict[Symbol, list[Order]]) -> list[list[Any]]:
-        compressed = []
-        for arr in orders.values():
-            for order in arr:
-                compressed.append([order.symbol, order.price, order.quantity])
-        return compressed
-
-    def to_json(self, value: Any) -> str:
-        return json.dumps(value, cls=ProsperityEncoder, separators=(",", ":"))
-
-    def truncate(self, value: str, max_length: int) -> str:
-        if len(value) <= max_length:
-            return value
-        return value[:max_length - 3] + "..."
-
-logger = Logger()
+from datamodel import Order, OrderDepth, TradingState
+from typing import Dict, List, Optional
 
 # ── constante ─────────────────────────────────────────────────────────────────
 
@@ -112,15 +16,14 @@ POSITION_LIMIT = 80
 SELL_TS_START  = 90_000   # IPR: switch la sell phase
 
 ACO_FV               = 10_000
-ACO_EMA_ALPHA        = 0.10
-ACO_SPREAD           = 6
+ACO_EMA_ALPHA        = 0.11
+ACO_SPREAD           = 7
 ACO_MAX_VOL          = 20
 ACO_TAKE_EDGE        = 4
 ACO_SKEW_FACTOR      = 0.10
 MOMENTUM_SKEW_FACTOR = 0.3
 IMBALANCE_FACTOR     = 1.5
 
-# ── trader ────────────────────────────────────────────────────────────────────
 
 class Trader:
 
@@ -130,7 +33,7 @@ class Trader:
         self.aco_ema: float                = 10_000.0
         self.prev_mid_aco: Optional[float] = None
 
-    # ── persistenta pipe-separated ───────────────────────────────────────────
+    # ── persistență pipe-separated ───────────────────────────────────────────
     # format: "current_day|prev_timestamp|aco_ema|prev_mid_aco"
 
     def _load(self, raw: str, timestamp: int):
@@ -172,9 +75,7 @@ class Trader:
         if od is not None:
             orders["ASH_COATED_OSMIUM"] = self._aco(od, pos_aco, aco_max_vol)
 
-        trader_data = self._save()
-        logger.flush(state, orders, 0, trader_data)
-        return orders, 0, trader_data
+        return orders, 0, self._save()
 
     # ── INTARIAN_PEPPER_ROOT — directional ───────────────────────────────────
 
@@ -187,12 +88,14 @@ class Trader:
         if timestamp >= SELL_TS_START:
             # sell phase: hit every bid until flat
             for bid, bid_vol in bids:
-                sell_cap = POSITION_LIMIT + pos
+                sell_cap = pos
                 if sell_cap <= 0:
                     break
                 vol = int(min(bid_vol, sell_cap))
                 if vol > 0:
-                    result.append(Order("INTARIAN_PEPPER_ROOT", bid, -vol))
+                    fv = 12_000 + 1_000 * self.current_day + 0.001 * timestamp
+                    limit_sell = max(bid, round(fv) - 2)
+                    result.append(Order("INTARIAN_PEPPER_ROOT", limit_sell, -vol))
                     pos -= vol
         else:
             # accumulation phase: lift every ask until max long
@@ -204,7 +107,7 @@ class Trader:
                 if vol > 0:
                     result.append(Order("INTARIAN_PEPPER_ROOT", ask, vol))
                     pos += vol
-            # passive bid pentru capacitatea ramasa
+            # passive bid pentru capacitatea rămasă
             if pos < POSITION_LIMIT and asks:
                 buy_cap = POSITION_LIMIT - pos
                 result.append(Order("INTARIAN_PEPPER_ROOT", asks[0][0] - 1, buy_cap))
