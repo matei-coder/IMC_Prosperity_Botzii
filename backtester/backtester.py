@@ -1,18 +1,48 @@
 import pandas as pd
-from typing import Dict, List
+from typing import Dict, List, Optional
 from datamodel import TradingState, OrderDepth, Order
 import matplotlib.pyplot as plt
 from trader import Trader
+from pathlib import Path
 
 class Backtester:
-    def __init__(self, trader, csv_file_path):
+    def __init__(self, trader, csv_file_path: Optional[str] = None, data_folder: Optional[str] = None):
         self.last_mid_prices: Dict[str, float] = {}
         self.trader = trader
-        self.df = pd.read_csv(csv_file_path, sep=';')
         self.positions: Dict[str, int] = {}
         self.cash: float = 0.0
         self.pnl_history: List[float] = []
         self.timestamps_history: List[int] = []
+
+        if data_folder:
+            self.df = self._load_all_historical_data(data_folder)
+        elif csv_file_path:
+            self.df = pd.read_csv(csv_file_path, sep=';')
+        else:
+            raise ValueError("Either csv_file_path or data_folder must be provided")
+
+    def _load_all_historical_data(self, data_folder: str) -> pd.DataFrame:
+        """Load all prices_round_1_day_*.csv files from data folder and concatenate them."""
+        data_path = Path(data_folder)
+        if not data_path.exists():
+            raise FileNotFoundError(f"Data folder not found: {data_folder}")
+
+        csv_files = sorted(data_path.glob('prices_round_1_day_*.csv'),
+                          key=lambda x: int(x.stem.split('_')[-1]))
+
+        if not csv_files:
+            raise FileNotFoundError(f"No prices_round_1_day_*.csv files found in {data_folder}")
+
+        print(f"Loading {len(csv_files)} historical data files...")
+        dataframes = []
+        for csv_file in csv_files:
+            print(f"  Loading: {csv_file.name}")
+            df = pd.read_csv(csv_file, sep=';')
+            dataframes.append(df)
+
+        combined_df = pd.concat(dataframes, ignore_index=True)
+        print(f"Total rows loaded: {len(combined_df)}")
+        return combined_df
 
     def build_order_depths(self, row) -> OrderDepth:
         order_depth = OrderDepth()
@@ -167,6 +197,8 @@ class Backtester:
 
 if __name__ == "__main__":
     my_trader = Trader()
-    tester = Backtester(my_trader, 'prices_round_1_day_0.csv')
+    # Load all historical data from round 1
+    data_folder = '../date istorice runda 1'
+    tester = Backtester(my_trader, data_folder=data_folder)
     tester.run()
     tester.plot_results()
