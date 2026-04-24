@@ -180,6 +180,10 @@ memory_levels = build_memory_from_day(price_dfs[0]['mid_price'].tolist(), day_we
 print(f"Initiale Day 0 Levels: {len(memory_levels)}")
 
 results = {}
+def get_day_weight(day):
+    # Day 0 = Basisgewicht 1, späteres Daten erhalten stärkeres Gewicht
+    return 1.0 + day * 2.0
+
 for day in [1, 2]:
     trades = simulate_day(price_dfs[day], memory_levels)
     total_pnl = sum(t['pnl'] for t in trades if t['action'] in ('SELL', 'CLOSE'))
@@ -191,12 +195,12 @@ for day in [1, 2]:
         'end_closes': sum(1 for t in trades if t['action'] == 'CLOSE'),
     }
 
-    # Update memory with this Day's levels: spätere Tage stärker gewichten
-    day_weight = 1.0 + day
+    # Update memory with this Day's levels: spätere Tage bekommen stärkeres Gewicht
+    day_weight = get_day_weight(day)
     new_levels = build_memory_from_day(price_dfs[day]['mid_price'].tolist(), day_weight=day_weight)
     for lvl in new_levels:
         merge_level(memory_levels, lvl['price'], lvl['type'], lvl['weight'], tolerance=1.0)
-    print(f"Day {day} hinzugefügte Levels: {len(new_levels)} => Memory jetzt: {len(memory_levels)}")
+    print(f"Day {day} hinzugefügte Levels: {len(new_levels)} (weight={day_weight}) => Memory jetzt: {len(memory_levels)}")
 
 # Ausgabe
 print("\n=== Strategie Ergebnis ===")
